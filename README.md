@@ -161,6 +161,14 @@ POST /cgpa/planner
 
 POST /chat/ask
 
+## Environment Variables
+
+Create a `.env` file in the project root.
+
+Example:
+
+GOOGLE_API_KEY=YOUR_GEMINI_API_KEY
+
 Technologies Used:
 
 Python
