@@ -8,7 +8,7 @@ from backend.db.database import engine, Base, get_db
 from backend.db.models import User, AttendanceRecord
 from backend.chatbot.academic_bot import academic_chat_response
 from backend.ml.feature_engineering import build_features
-from backend.ml.model_loader import final_model, short_model
+from backend.ml.model_loader import final_model
 from google import genai
 import os
 import re
@@ -143,7 +143,7 @@ Format:
     client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
     response = client.models.generate_content(
-        model="models/gemini-2.5-flash",
+        model="models/gemini-3.6-flash",
         contents=[
             {
                 "role": "user",
@@ -255,93 +255,22 @@ def get_merged_subjects(
     return {"merged_subjects": result}
 
 
-@app.post("/attendance/can-i-miss")
-def can_i_miss(
-    subject: str = Form(...),
-    weekly_hours: int = Form(...),
-    semester_weeks: int = Form(...),
-    required_percentage: float = Form(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-
-    records = db.query(AttendanceRecord).all()
-
-    merged = {}
-
-    for r in records:
-
-        key = canonical_subject_key(r.subject)
-
-        if key not in merged:
-            clean_display = re.sub(r"(T\d+|P\d+|U\d+|J\d+)", "", r.subject)
-            clean_display = re.sub(r"-BTDS", "", clean_display).strip()
-
-            merged[key] = {
-                "subject": clean_display,
-                "lectures_conducted": 0,
-                "lectures_attended": 0
-            }
-
-        merged[key]["lectures_conducted"] += r.lectures_conducted
-        merged[key]["lectures_attended"] += r.lectures_attended
-
-    subject_key = canonical_subject_key(subject)
-
-    if subject_key not in merged:
-        raise HTTPException(status_code=404, detail="Subject not found")
-
-    total_conducted = merged[subject_key]["lectures_conducted"]
-    total_attended = merged[subject_key]["lectures_attended"]
-
-    total_planned = weekly_hours * semester_weeks
-
-    current_missed = total_conducted - total_attended
-
-    max_miss_allowed = total_planned - int((required_percentage / 100) * total_planned)
-
-    remaining = max_miss_allowed - current_missed
-
-    current_percentage = round((total_attended / total_conducted) * 100, 2)
-
-    future_percentage = round((total_attended / (total_conducted + 1)) * 100, 2)
-
-    if future_percentage >= required_percentage:
-
-        output = (
-            f"You can miss the next hour. Your current attendance is {current_percentage}%. "
-            f"If you miss, it will become {future_percentage}%. "
-            f"You can still miss {remaining} more hours while maintaining {required_percentage}% attendance."
-        )
-
-    else:
-
-        output = (
-            f"You cannot miss the next hour. Your current attendance is {current_percentage}%. "
-            f"If you miss, it will drop to {future_percentage}% which is below {required_percentage}%."
-        )
-
-    return {
-        "subject": subject,
-        "total_planned_hours": total_planned,
-        "lectures_conducted": total_conducted,
-        "lectures_attended": total_attended,
-        "lectures_missed": current_missed,
-        "current_percentage": current_percentage,
-        "remaining_hours_you_can_miss": remaining,
-        "output": output
-    }
-
 @app.post("/attendance/predict-risk")
 def predict_risk(
     subject: str = Form(...),
     weekly_hours: int = Form(...),
     semester_weeks: int = Form(...),
     required_percentage: float = Form(...),
-    K: int = Form(...),
+    hours_to_miss: int = Form(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+
+    if hours_to_miss < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="hours_to_miss cannot be negative"
+        )
 
     records = db.query(AttendanceRecord).all()
 
@@ -369,125 +298,107 @@ def predict_risk(
     if subject_key not in merged:
         raise HTTPException(status_code=404, detail="Subject not found")
 
+    clean_subject = merged[subject_key]["subject"]
     total_conducted = merged[subject_key]["lectures_conducted"]
     total_attended = merged[subject_key]["lectures_attended"]
 
-    total_planned = weekly_hours * semester_weeks
+    if total_conducted <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Conducted hours must be greater than zero"
+        )
 
-    features = build_features(
+    total_planned = weekly_hours * semester_weeks
+    remaining_hours = total_planned - total_conducted
+
+    if hours_to_miss > remaining_hours:
+        raise HTTPException(
+            status_code=400,
+            detail=f"hours_to_miss ({hours_to_miss}) exceeds remaining semester hours ({remaining_hours})"
+        )
+
+    # -------------------------
+    # CURRENT STATE
+    # -------------------------
+    current_percentage = round((total_attended / total_conducted) * 100, 2)
+
+    current_features = build_features(
         total_conducted,
         total_attended,
         total_planned,
         weekly_hours,
         required_percentage,
-        semester_weeks,
-        K
+        semester_weeks
     )
 
-    final_prob = float(final_model.predict_proba(features)[0][1])
-    short_prob = float(short_model.predict_proba(features)[0][1])
+    current_prob = float(
+        final_model.predict_proba(current_features)[0][1]
+    )
+    current_risk_percent = round(current_prob * 100, 2)
 
-    final_percent = round(final_prob * 100, 2)
-    short_percent = round(short_prob * 100, 2)
+    # -------------------------
+    # SCENARIO STATE (HOURS MISSED)
+    # -------------------------
+    simulated_conducted = total_conducted + hours_to_miss
+    simulated_attended = total_attended
 
-    current_percentage = round((total_attended / total_conducted) * 100, 2)
-
-    message = (
-        f"Your current attendance in {subject} is {current_percentage}%. "
-        f"You currently have {final_percent}% risk of falling below {required_percentage}% attendance by the end of the semester. "
-        f"However, if lectures are missed continuously for the next {K} weeks, "
-        f"the risk of falling below the required attendance increases to {short_percent}%."
+    projected_percentage = round(
+        (simulated_attended / simulated_conducted) * 100, 2
     )
 
-    return {
-        "subject": subject,
-        "output": message
-    }
-
-@app.post("/attendance/simulate")
-def simulate_attendance(
-    subject: str = Form(...),
-    lectures_to_miss: int = Form(...),
-    weekly_hours: int = Form(...),
-    semester_weeks: int = Form(...),
-    required_percentage: float = Form(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-
-    records = db.query(AttendanceRecord).all()
-
-    merged = {}
-
-    for r in records:
-
-        key = canonical_subject_key(r.subject)
-
-        if key not in merged:
-            clean_display = re.sub(r"(T\d+|P\d+|U\d+|J\d+)", "", r.subject)
-            clean_display = re.sub(r"-BTDS", "", clean_display).strip()
-
-            merged[key] = {
-                "subject": clean_display,
-                "lectures_conducted": 0,
-                "lectures_attended": 0
-            }
-
-        merged[key]["lectures_conducted"] += r.lectures_conducted
-        merged[key]["lectures_attended"] += r.lectures_attended
-
-    subject_key = canonical_subject_key(subject)
-
-    if subject_key not in merged:
-        raise HTTPException(status_code=404, detail="Subject not found")
-
-    total_conducted = merged[subject_key]["lectures_conducted"]
-    total_attended = merged[subject_key]["lectures_attended"]
-
-    current_percentage = round((total_attended / total_conducted) * 100, 2)
-
-    new_conducted = total_conducted + lectures_to_miss
-    new_attended = total_attended
-
-    future_percentage = round((new_attended / new_conducted) * 100, 2)
-
-    total_planned = weekly_hours * semester_weeks
-
-    features = build_features(
-        new_conducted,
-        new_attended,
+    scenario_features = build_features(
+        simulated_conducted,
+        simulated_attended,
         total_planned,
         weekly_hours,
         required_percentage,
-        semester_weeks,
-        1
+        semester_weeks
     )
 
-    risk_probability = float(final_model.predict_proba(features)[0][1])
-    risk_percent = round(risk_probability * 100, 2)
+    scenario_prob = float(
+        final_model.predict_proba(scenario_features)[0][1]
+    )
+    scenario_risk_percent = round(scenario_prob * 100, 2)
 
-    if future_percentage >= required_percentage:
+    # -------------------------
+    # RESPONSE MESSAGE
+    # -------------------------
+    base_text = (
+        f"Your current attendance in {clean_subject} is {current_percentage}%. "
+        f"You currently have an estimated {current_risk_percent}% risk of falling below {required_percentage}% attendance by the end of the semester."
+    )
 
+    if hours_to_miss == 0:
         message = (
-            f"If you miss {lectures_to_miss} lectures of {subject}, "
-            f"your attendance will change from {current_percentage}% to {future_percentage}%. "
-            f"You will still remain above the required {required_percentage}% attendance. "
-            f"The predicted risk of falling below the threshold later in the semester is {risk_percent}%."
+            f"Your current attendance in {clean_subject} is {current_percentage}%. "
+            f"No additional hours missed. Your current estimated semester risk is {current_risk_percent}%."
         )
-
     else:
-
-        message = (
-            f"If you miss {lectures_to_miss} lectures of {subject}, "
-            f"your attendance will drop from {current_percentage}% to {future_percentage}%. "
-            f"This will place you below the required {required_percentage}% attendance. "
-            f"The predicted risk of remaining below the threshold is {risk_percent}%."
-        )
+        hour_word = "hour" if hours_to_miss == 1 else "hours"
+        if scenario_risk_percent > current_risk_percent:
+            scenario_text = (
+                f"If you miss the next {hours_to_miss} {hour_word}, "
+                f"your projected attendance will be {projected_percentage}% "
+                f"and your estimated risk will increase to {scenario_risk_percent}%."
+            )
+        else:
+            scenario_text = (
+                f"If you miss the next {hours_to_miss} {hour_word}, "
+                f"your projected attendance will be {projected_percentage}% "
+                f"and your estimated risk will be {scenario_risk_percent}%."
+            )
+        message = f"{base_text} {scenario_text}"
 
     return {
-        "subject": subject,
+        "subject": clean_subject,
+        "current_attendance": current_percentage,
+        "current_estimated_semester_risk": current_risk_percent,
+        "hours_to_miss": hours_to_miss,
+        "projected_attendance": projected_percentage,
+        "estimated_risk_after_missed_hours": scenario_risk_percent,
         "output": message
     }
+
 
 @app.post("/cgpa/plan")
 def cgpa_plan(

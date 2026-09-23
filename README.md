@@ -10,8 +10,7 @@ Universities often enforce strict attendance requirements (typically 75–80%). 
 This system solves that problem by providing:
 	•	Automated attendance report parsing
 	•	Attendance analytics and projections
-	•	Lecture-miss simulation
-	•	Academic risk prediction using machine learning
+	•	Academic risk and scenario prediction using machine learning
 	•	CGPA trajectory planning
 	•	AI academic assistant for student queries
 
@@ -38,43 +37,40 @@ Lectures Conducted: 23
 Lectures Attended: 22
 Attendance: 95.6%
 
-“Can I Miss?” Attendance Simulator:
+Academic Risk & Attendance Scenario Simulator (Machine Learning):
 
-Students can simulate missing a lecture.
+Students can check their current academic risk and simulate missing future attendance hours.
 
-The system calculates:
-Current attendance,
-Attendance after missing a lecture,
-Remaining lectures that can be missed,
-Whether the student will remain above the required threshold.
+The system uses a single semester-risk Logistic Regression model to evaluate:
+1. Current risk based on the student's current attendance state.
+2. Scenario risk after simulating a specified number of future attendance hours missed ("Hours You Plan to Miss").
 
-Example:
-You cannot miss the next lecture.
-Your current attendance is 76.4%.
-If you miss the next lecture, it will drop to 72.2%, which is below the required 80%.
-
-
-Academic Risk Prediction (Machine Learning):
-
-Two ML models predict whether a student is likely to fall below the required attendance.
-
-Models used:
-Logistic Regression
-Short-term risk prediction
-Long-term semester projection
+Inputs:
+- Subject
+- Weekly hours
+- Semester weeks
+- Required attendance percentage
+- Hours you plan to miss (`hours_to_miss`)
 
 Features used:
-Current attendance percentage
-Miss ratio
-Buffer ratio
-Remaining weeks
-Weekly lecture load
-Required attendance threshold
+- Current attendance percentage
+- Miss ratio
+- Buffer ratio
+- Attendance gap
+- Remaining weeks
+- Weekly hours
+- Required attendance threshold
+
+The system calculates and reports:
+- Current attendance percentage
+- Current estimated semester risk
+- Hours the student plans to miss
+- Projected attendance after those missed hours
+- Estimated risk after those missed hours
 
 Example:
-You currently have a 14% risk of falling below 80% attendance by the end of the semester.
+Your current attendance in Mobile Application Development is 76.47%. You currently have an estimated 12.4% risk of falling below 80.0% attendance by the end of the semester. If you miss the next 2 hours, your projected attendance will be 68.42% and your estimated risk will increase to 71.8%.
 
-If you continue missing lectures for the next 3 weeks, your risk may rise to 63%.
 
 CGPA Target Planner:
 
@@ -154,7 +150,6 @@ POST /auth/login
 POST /attendance/upload-report
 GET  /attendance/merged-subjects
 
-POST /attendance/can-i-miss
 POST /attendance/predict-risk
 
 POST /cgpa/planner

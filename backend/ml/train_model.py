@@ -100,37 +100,7 @@ def build_dataset():
 
             buffer_ratio = remaining_allowed_miss / total_planned_hours
             attendance_gap = required_percentage - current_percentage
-            remaining_weeks = semester_weeks - week
-
-            if remaining_weeks > 0:
-                K = random.randint(1, remaining_weeks)
-            else:
-                K = 1
-
-            # -------------------------
-            # STOCHASTIC SHORT-TERM SIMULATION
-            # -------------------------
-
-            sim_attended = attended
-            sim_conducted = conducted
-
-            sim_absentee_prob = absentee_prob
-
-            for future_week in range(K):
-
-                drift = random.uniform(-0.02, 0.02)
-                sim_absentee_prob = min(max(sim_absentee_prob + drift, 0.01), 0.6)
-
-                for _ in range(weekly_hours):
-                    sim_conducted += 1
-                    if random.random() > sim_absentee_prob:
-                        sim_attended += 1
-
-            projected_percentage = (sim_attended / total_planned_hours) * 100
-
-            short_term_failure = (
-                1 if projected_percentage < required_percentage else 0
-            )
+            remaining_weeks = max(semester_weeks - week, 0)
 
             rows.append([
                 current_percentage,
@@ -140,9 +110,7 @@ def build_dataset():
                 remaining_weeks,
                 weekly_hours,
                 required_percentage,
-                K,
-                final_failure,
-                short_term_failure
+                final_failure
             ])
 
     columns = [
@@ -153,9 +121,7 @@ def build_dataset():
         "remaining_weeks",
         "weekly_hours",
         "required_percentage",
-        "K",
-        "final_failure",
-        "short_term_failure"
+        "final_failure"
     ]
 
     return pd.DataFrame(rows, columns=columns)
@@ -169,50 +135,29 @@ def train_models():
 
     df = build_dataset()
 
-    X_final = df.drop(columns=["final_failure", "short_term_failure"])
-    y_final = df["final_failure"]
+    X = df.drop(columns=["final_failure"])
+    y = df["final_failure"]
 
-    X_short = X_final.copy()
-    y_short = df["short_term_failure"]
-
-    Xf_train, Xf_test, yf_train, yf_test = train_test_split(
-        X_final, y_final, test_size=0.2, random_state=42
-    )
-
-    Xs_train, Xs_test, ys_train, ys_test = train_test_split(
-        X_short, y_short, test_size=0.2, random_state=42
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
     )
 
     final_model = LogisticRegression(max_iter=1000)
-    short_model = LogisticRegression(max_iter=1000)
+    final_model.fit(X_train, y_train)
 
-    final_model.fit(Xf_train, yf_train)
-    short_model.fit(Xs_train, ys_train)
-
-    print("Final Model ROC-AUC:",
-          roc_auc_score(yf_test, final_model.predict_proba(Xf_test)[:, 1]))
-
-    print("Short-Term Model ROC-AUC:",
-          roc_auc_score(ys_test, short_model.predict_proba(Xs_test)[:, 1]))
-    
+    roc_auc = roc_auc_score(y_test, final_model.predict_proba(X_test)[:, 1])
+    print("Final Model ROC-AUC:", roc_auc)
     print("\nFinal Failure Rate:", df["final_failure"].mean())
-    print("Short-Term Failure Rate:", df["short_term_failure"].mean())
 
     print("\nFinal Model Coefficients:")
-    for feature, coef in zip(X_final.columns, final_model.coef_[0]):
-        print(feature, round(coef, 4))
-
-    print("\nShort-Term Model Coefficients:")
-    for feature, coef in zip(X_short.columns, short_model.coef_[0]):
+    for feature, coef in zip(X.columns, final_model.coef_[0]):
         print(feature, round(coef, 4))
 
     os.makedirs("backend/ml/models", exist_ok=True)
-
     joblib.dump(final_model, "backend/ml/models/final_risk_model.pkl")
-    joblib.dump(short_model, "backend/ml/models/short_term_model.pkl")
-
-    print("Models saved successfully.")
+    print("Final risk model saved successfully.")
 
 
 if __name__ == "__main__":
     train_models()
+

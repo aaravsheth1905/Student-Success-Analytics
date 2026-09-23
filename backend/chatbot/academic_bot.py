@@ -1,12 +1,14 @@
 from google import genai
+from dotenv import load_dotenv
 import os
 import base64
 import pdfplumber
 from fastapi import UploadFile
 
+load_dotenv(override=True)
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
-MODEL_NAME = "models/gemini-2.5-flash"
+MODEL_NAME = "models/gemini-3.6-flash"
 
 
 def extract_text_from_pdf(upload_file: UploadFile):

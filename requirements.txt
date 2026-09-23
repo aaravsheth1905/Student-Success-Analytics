@@ -1,7 +1,8 @@
 fastapi
 uvicorn
 sqlalchemy
-passlib[bcrypt]
+passlib[argon2]
+argon2-cffi
 python-jose
 python-dotenv
 google-genai
@@ -10,3 +11,4 @@ scikit-learn
 pandas
 numpy
 joblib
+python-multipart
